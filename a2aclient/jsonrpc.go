@@ -137,7 +137,7 @@ func (t *jsonrpcTransport) sendRequest(ctx context.Context, method string, param
 	}()
 
 	if httpResp.StatusCode != http.StatusOK {
-		return nil, jsonrpc.FromHTTPError(httpResp)
+		return nil, newHTTPError(httpResp, jsonrpc.FromHTTPError(httpResp))
 	}
 
 	var resp jsonrpc.ClientResponse
@@ -166,7 +166,7 @@ func (t *jsonrpcTransport) sendStreamingRequest(ctx context.Context, method stri
 	}
 
 	if httpResp.StatusCode != http.StatusOK {
-		statusErr := jsonrpc.FromHTTPError(httpResp)
+		statusErr := newHTTPError(httpResp, jsonrpc.FromHTTPError(httpResp))
 		if err := httpResp.Body.Close(); err != nil {
 			log.Error(ctx, "failed to close http response body", err)
 		}

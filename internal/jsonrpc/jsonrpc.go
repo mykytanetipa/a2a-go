@@ -147,20 +147,52 @@ func FromJSONRPCError(e *Error) error {
 // maxErrorBodyBytes limits how much of a non-200 HTTP response body is read.
 const maxErrorBodyBytes = 1 << 20
 
-// FromHTTPError converts a non-200 HTTP response to an error. A JSON body carrying a JSON-RPC error,
-// for example one written by an auth middleware, is converted with [FromJSONRPCError]. Any other
-// response is reported using its HTTP status.
+// FromHTTPError converts a non-200 HTTP response to an error. A JSON body carrying a JSON-RPC error
+// with a known code, for example one written by an auth middleware, is converted with
+// [FromJSONRPCError]. Otherwise the HTTP status decides, as in [FromHTTPStatus]; for 401 and 403
+// the server's message is kept.
 func FromHTTPError(resp *http.Response) error {
-	statusErr := fmt.Errorf("unexpected HTTP status: %s", resp.Status)
 	mediaType, _, err := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if err != nil || mediaType != ContentJSON {
-		return statusErr
+		return FromHTTPStatus(resp.StatusCode, resp.Status)
 	}
 	var parsed ClientResponse
 	if err := utils.DecodeJSON(io.LimitReader(resp.Body, maxErrorBodyBytes), &parsed); err != nil || parsed.Error == nil {
-		return statusErr
+		return FromHTTPStatus(resp.StatusCode, resp.Status)
+	}
+	if _, known := codeToError[parsed.Error.Code]; !known {
+		if sentinel := statusSentinel(resp.StatusCode); sentinel != nil {
+			msg := parsed.Error.Message
+			if msg == "" {
+				msg = fmt.Sprintf("unexpected HTTP status: %s", resp.Status)
+			}
+			return a2a.NewError(sentinel, msg)
+		}
 	}
 	return FromJSONRPCError(parsed.Error)
+}
+
+// FromHTTPStatus returns the error for a JSON-RPC response whose HTTP status is not 200 OK.
+// 401 and 403 map to [a2a.ErrUnauthenticated] and [a2a.ErrUnauthorized]; other statuses
+// carry no A2A error.
+func FromHTTPStatus(statusCode int, status string) error {
+	msg := fmt.Sprintf("unexpected HTTP status: %s", status)
+	if sentinel := statusSentinel(statusCode); sentinel != nil {
+		return a2a.NewError(sentinel, msg)
+	}
+	return errors.New(msg)
+}
+
+// statusSentinel returns the A2A error a JSON-RPC client reports for an HTTP status, or nil.
+func statusSentinel(statusCode int) error {
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return a2a.ErrUnauthenticated
+	case http.StatusForbidden:
+		return a2a.ErrUnauthorized
+	default:
+		return nil
+	}
 }
 
 // ToJSONRPCError converts an error to a JSON-RPC [Error].

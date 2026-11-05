@@ -193,3 +193,56 @@ func TestJSONRPC_ClientNonOKStatus(t *testing.T) {
 		t.Fatalf("SendStreamingMessage() error = %v, want %v with the server message", streamErr, a2a.ErrUnauthenticated)
 	}
 }
+
+func TestJSONRPC_ClientHTTPError(t *testing.T) {
+	t.Parallel()
+	const challenge = `Bearer resource_metadata="https://agent.example.com/.well-known/oauth-protected-resource"`
+	tests := []struct {
+		name    string
+		status  int
+		wantErr error
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, wantErr: a2a.ErrUnauthenticated},
+		{name: "forbidden", status: http.StatusForbidden, wantErr: a2a.ErrUnauthorized},
+		{name: "unavailable", status: http.StatusServiceUnavailable},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("WWW-Authenticate", challenge)
+				http.Error(w, "denied", tc.status)
+			}))
+			t.Cleanup(server.Close)
+			transport := NewJSONRPCTransport(JSONRPCTransportConfig{URL: server.URL})
+
+			_, unaryErr := transport.GetTask(t.Context(), a2aclient.ServiceParams{}, &a2a.GetTaskRequest{ID: "task-123"})
+			var streamErr error
+			for _, err := range transport.SendStreamingMessage(t.Context(), a2aclient.ServiceParams{}, &a2a.SendMessageRequest{
+				Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("test")),
+			}) {
+				if err != nil {
+					streamErr = err
+					break
+				}
+			}
+			for call, err := range map[string]error{"GetTask": unaryErr, "SendStreamingMessage": streamErr} {
+				var httpErr *a2aclient.HTTPError
+				if !errors.As(err, &httpErr) {
+					t.Fatalf("%s() error = %v, want *a2aclient.HTTPError", call, err)
+				}
+				type result struct {
+					Status    int
+					Challenge string
+				}
+				got := result{httpErr.StatusCode, httpErr.Header.Get("WWW-Authenticate")}
+				if diff := cmp.Diff(result{tc.status, challenge}, got); diff != "" {
+					t.Fatalf("%s() HTTPError wrong result (-want +got) diff = %s", call, diff)
+				}
+				if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+					t.Fatalf("%s() error = %v, want %v", call, err, tc.wantErr)
+				}
+			}
+		})
+	}
+}

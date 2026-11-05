@@ -140,7 +140,7 @@ func (t *restCompatTransport) sendRequest(ctx context.Context, req *compatRestRe
 				log.Error(ctx, "failed to close http response body", err)
 			}
 		}()
-		return nil, rest.FromRESTError(resp)
+		return nil, &a2aclient.HTTPError{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Err: rest.FromRESTError(resp)}
 	}
 	return resp, nil
 }
