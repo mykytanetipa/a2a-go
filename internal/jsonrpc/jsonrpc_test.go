@@ -18,6 +18,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -384,5 +387,120 @@ func errorWithErrorInfo(t *testing.T, message string, err error, reason string) 
 				"metadata": map[string]string{},
 			}),
 		},
+	}
+}
+
+func TestFromHTTPError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name        string
+		code        int
+		status      string
+		contentType string
+		body        string
+		wantErr     error
+		wantMessage string
+		wantDetails map[string]any
+	}{
+		{
+			name: "known code other than the status's", code: 401, status: "401 Unauthorized", contentType: "application/json",
+			body:    `{"jsonrpc":"2.0","id":null,"error":{"code":-32001,"message":"no such task"}}`,
+			wantErr: a2a.ErrTaskNotFound, wantMessage: "no such task",
+		},
+		{
+			name: "unknown code on 401 keeps the details", code: 401, status: "401 Unauthorized", contentType: "application/json",
+			body:    `{"error":{"code":16,"message":"expired","data":[{"@type":"type.googleapis.com/google.rpc.Help","links":"https://example.com/help"}]}}`,
+			wantErr: a2a.ErrUnauthenticated, wantMessage: "expired",
+			wantDetails: map[string]any{"links": "https://example.com/help"},
+		},
+		{
+			name: "JSON-RPC error with a known code", code: 401, status: "401 Unauthorized", contentType: "application/json",
+			body:    `{"jsonrpc":"2.0","id":null,"error":{"code":-31401,"message":"the token was revoked"}}`,
+			wantErr: a2a.ErrUnauthenticated, wantMessage: "the token was revoked",
+		},
+		{
+			name: "gateway 401 with a google.rpc.Status body", code: 401, status: "401 Unauthorized", contentType: "application/json",
+			body:    `{"error":{"code":401,"message":"Request had invalid authentication credentials.","status":"UNAUTHENTICATED"}}`,
+			wantErr: a2a.ErrUnauthenticated, wantMessage: "Request had invalid authentication credentials.",
+		},
+		{
+			name: "gateway 403 with an unknown code and no message", code: 403, status: "403 Forbidden", contentType: "application/json",
+			body:    `{"error":{"code":403}}`,
+			wantErr: a2a.ErrUnauthorized, wantMessage: "unexpected HTTP status: 403 Forbidden",
+		},
+		{
+			name: "unknown code on another status", code: 500, status: "500 Internal Server Error", contentType: "application/json",
+			body:    `{"error":{"code":500,"message":"boom"}}`,
+			wantErr: a2a.ErrInternalError, wantMessage: "boom",
+		},
+		{
+			name: "401 without a JSON body", code: 401, status: "401 Unauthorized", contentType: "text/plain",
+			body:    "denied",
+			wantErr: a2a.ErrUnauthenticated, wantMessage: "unexpected HTTP status: 401 Unauthorized",
+		},
+		{
+			name: "502 without a JSON body", code: 502, status: "502 Bad Gateway", contentType: "text/html",
+			body:        "<html></html>",
+			wantMessage: "unexpected HTTP status: 502 Bad Gateway",
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			resp := &http.Response{
+				StatusCode: tc.code,
+				Status:     tc.status,
+				Header:     http.Header{"Content-Type": {tc.contentType}},
+				Body:       io.NopCloser(strings.NewReader(tc.body)),
+			}
+			err := FromHTTPError(resp)
+			if err == nil || err.Error() != tc.wantMessage {
+				t.Fatalf("FromHTTPError() error = %v, want message %q", err, tc.wantMessage)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("FromHTTPError() error = %v, want %v", err, tc.wantErr)
+			}
+			var a2aErr *a2a.Error
+			if tc.wantErr == nil && errors.As(err, &a2aErr) {
+				t.Fatalf("FromHTTPError() error = %v, want no A2A error", err)
+			}
+			if tc.wantDetails != nil {
+				if !errors.As(err, &a2aErr) {
+					t.Fatalf("FromHTTPError() error = %v, want an *a2a.Error", err)
+				}
+				if diff := cmp.Diff(tc.wantDetails, a2aErr.Details); diff != "" {
+					t.Fatalf("FromHTTPError() details wrong result (-want +got) diff = %s", diff)
+				}
+			}
+		})
+	}
+}
+
+func TestFromHTTPStatus(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		code    int
+		status  string
+		wantErr error
+	}{
+		{name: "unauthorized", code: 401, status: "401 Unauthorized", wantErr: a2a.ErrUnauthenticated},
+		{name: "forbidden", code: 403, status: "403 Forbidden", wantErr: a2a.ErrUnauthorized},
+		{name: "other", code: 502, status: "502 Bad Gateway"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			err := FromHTTPStatus(tc.code, tc.status)
+			if want := "unexpected HTTP status: " + tc.status; err.Error() != want {
+				t.Fatalf("FromHTTPStatus() error = %q, want %q", err.Error(), want)
+			}
+			if tc.wantErr != nil && !errors.Is(err, tc.wantErr) {
+				t.Fatalf("FromHTTPStatus() error = %v, want %v", err, tc.wantErr)
+			}
+			if tc.wantErr == nil && (errors.Is(err, a2a.ErrUnauthenticated) || errors.Is(err, a2a.ErrUnauthorized)) {
+				t.Fatalf("FromHTTPStatus() error = %v, want no A2A error", err)
+			}
+		})
 	}
 }

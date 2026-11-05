@@ -1092,3 +1092,30 @@ func TestJSONRPCTransport_NonOKStatus(t *testing.T) {
 		})
 	}
 }
+
+func TestJSONRPCTransport_HTTPError(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name    string
+		status  int
+		wantErr error
+	}{
+		{name: "unauthorized", status: http.StatusUnauthorized, wantErr: a2a.ErrUnauthenticated},
+		{name: "forbidden", status: http.StatusForbidden, wantErr: a2a.ErrUnauthorized},
+		{name: "server error", status: http.StatusInternalServerError},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			transport := NewJSONRPCTransport(challengeServer(t, tc.status).URL, nil)
+
+			_, err := transport.GetTask(t.Context(), ServiceParams{}, &a2a.GetTaskRequest{ID: "task-123"})
+			assertHTTPError(t, "GetTask", err, tc.status, tc.wantErr)
+
+			err = firstErr(transport.SendStreamingMessage(t.Context(), ServiceParams{}, &a2a.SendMessageRequest{
+				Message: a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart("test")),
+			}))
+			assertHTTPError(t, "SendStreamingMessage", err, tc.status, tc.wantErr)
+		})
+	}
+}

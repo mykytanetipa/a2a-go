@@ -16,7 +16,10 @@ package a2aclient
 
 import (
 	"context"
+	"errors"
 	"iter"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -98,5 +101,55 @@ func TestTenantTransport_StreamingRequestReuse(t *testing.T) {
 	}
 	if request.Tenant != "" {
 		t.Fatalf("SendStreamingMessage() request.Tenant = %q, want empty", request.Tenant)
+	}
+}
+
+const testChallenge = `Bearer resource_metadata="https://agent.example.com/.well-known/oauth-protected-resource"`
+
+// challengeServer answers every request with status and a Bearer challenge.
+func challengeServer(t *testing.T, status int) *httptest.Server {
+	t.Helper()
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", testChallenge)
+		http.Error(w, "denied", status)
+	}))
+	t.Cleanup(server.Close)
+	return server
+}
+
+// firstErr returns the first error of a stream.
+func firstErr(seq iter.Seq2[a2a.Event, error]) error {
+	for _, err := range seq {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func assertHTTPError(t *testing.T, call string, err error, wantStatus int, wantErr error) {
+	t.Helper()
+	var httpErr *HTTPError
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("%s() error = %v, want *HTTPError", call, err)
+	}
+	type result struct {
+		Status    int
+		Challenge string
+	}
+	got := result{httpErr.StatusCode, httpErr.Header.Get("WWW-Authenticate")}
+	if diff := cmp.Diff(result{wantStatus, testChallenge}, got); diff != "" {
+		t.Fatalf("%s() HTTPError wrong result (-want +got) diff = %s", call, diff)
+	}
+	if wantErr != nil && !errors.Is(err, wantErr) {
+		t.Fatalf("%s() error = %v, want %v", call, err, wantErr)
+	}
+}
+
+func TestHTTPErrorWithoutCause(t *testing.T) {
+	t.Parallel()
+	err := &HTTPError{StatusCode: http.StatusServiceUnavailable}
+	if got, want := err.Error(), "unexpected HTTP status 503"; got != want {
+		t.Fatalf("HTTPError.Error() = %q, want %q", got, want)
 	}
 }

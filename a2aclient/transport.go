@@ -17,7 +17,9 @@ package a2aclient
 import (
 	"context"
 	"errors"
+	"fmt"
 	"iter"
+	"net/http"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -240,4 +242,32 @@ func (d *tenantTransportDecorator) GetExtendedAgentCard(ctx context.Context, par
 
 func (d *tenantTransportDecorator) Destroy() error {
 	return d.base.Destroy()
+}
+
+// HTTPError is returned by the JSON-RPC and REST transports when the server answers with
+// a status other than 200 OK. It keeps the status code and the response headers, such as
+// WWW-Authenticate or Retry-After, and unwraps to the error the response maps to, for
+// example [a2a.ErrUnauthenticated] for 401.
+type HTTPError struct {
+	// StatusCode is the HTTP status code of the response.
+	StatusCode int
+	// Header holds the response headers.
+	Header http.Header
+	// Err is the error the response maps to.
+	Err error
+}
+
+// Error implements the error interface.
+func (e *HTTPError) Error() string {
+	if e.Err == nil {
+		return fmt.Sprintf("unexpected HTTP status %d", e.StatusCode)
+	}
+	return e.Err.Error()
+}
+
+// Unwrap returns the error the response maps to.
+func (e *HTTPError) Unwrap() error { return e.Err }
+
+func newHTTPError(resp *http.Response, err error) *HTTPError {
+	return &HTTPError{StatusCode: resp.StatusCode, Header: resp.Header.Clone(), Err: err}
 }

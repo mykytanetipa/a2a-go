@@ -34,6 +34,8 @@ import (
 type ErrStatusNotOK struct {
 	StatusCode int
 	Status     string
+	// Header holds the response headers, such as WWW-Authenticate.
+	Header http.Header
 }
 
 func (e *ErrStatusNotOK) Error() string {
@@ -167,7 +169,7 @@ func fetchCard(ctx context.Context, client *http.Client, reqURL string, headers 
 	}()
 
 	if resp.StatusCode != http.StatusOK {
-		return nil, &ErrStatusNotOK{StatusCode: resp.StatusCode, Status: resp.Status}
+		return nil, &ErrStatusNotOK{StatusCode: resp.StatusCode, Status: resp.Status, Header: resp.Header.Clone()}
 	}
 
 	body, err := io.ReadAll(resp.Body)
