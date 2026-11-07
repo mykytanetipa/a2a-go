@@ -269,3 +269,22 @@ func TestResolver_CompleteCardURL(t *testing.T) {
 		t.Errorf("AgentCards are different:\ngot %v\nwant %v\ndiff(-want +got):\n%v", got, want, diff)
 	}
 }
+
+func TestResolver_StatusNotOKHeader(t *testing.T) {
+	t.Parallel()
+	const challenge = `Bearer resource_metadata="https://agent.example.com/.well-known/oauth-protected-resource"`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("WWW-Authenticate", challenge)
+		http.Error(w, "denied", http.StatusUnauthorized)
+	}))
+	t.Cleanup(server.Close)
+
+	_, err := (&Resolver{}).Resolve(t.Context(), server.URL)
+	var httpErr *ErrStatusNotOK
+	if !errors.As(err, &httpErr) {
+		t.Fatalf("Resolve() error = %v, want *ErrStatusNotOK", err)
+	}
+	if got := httpErr.Header.Get("WWW-Authenticate"); got != challenge {
+		t.Fatalf("ErrStatusNotOK.Header WWW-Authenticate = %q, want %q", got, challenge)
+	}
+}
