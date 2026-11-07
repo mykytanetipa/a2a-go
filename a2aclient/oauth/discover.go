@@ -148,8 +148,8 @@ func (f fetcher) schemeEndpoints(ctx context.Context, scheme a2a.SecurityScheme)
 		if err != nil {
 			return Endpoints{}, false, false, err
 		}
-		e := m.Endpoints()
-		return e, device, true, errors.Join(e.Validate(), f.checkEndpoints(e))
+		e, err := m.usableEndpoints()
+		return e, device || e.Authorization == "", true, errors.Join(err, f.checkEndpoints(e))
 	case a2a.OpenIDConnectSecurityScheme:
 		if s.OpenIDConnectURL == "" {
 			return Endpoints{}, false, false, nil
@@ -158,8 +158,8 @@ func (f fetcher) schemeEndpoints(ctx context.Context, scheme a2a.SecurityScheme)
 		if err != nil {
 			return Endpoints{}, false, false, err
 		}
-		e := m.Endpoints()
-		return e, false, true, errors.Join(e.Validate(), f.checkEndpoints(e))
+		e, err := m.usableEndpoints()
+		return e, e.Authorization == "", true, errors.Join(err, f.checkEndpoints(e))
 	default:
 		return Endpoints{}, false, false, nil
 	}
@@ -263,6 +263,12 @@ func adoptInline(m *authServerMetadata, e Endpoints) (Endpoints, error) {
 	}
 	resolved.Authorization = cmp.Or(resolved.Authorization, e.Authorization)
 	resolved.DeviceAuthorization = cmp.Or(resolved.DeviceAuthorization, e.DeviceAuthorization)
+	if !m.supportsS256() {
+		if resolved.DeviceAuthorization == "" {
+			return Endpoints{}, fmt.Errorf("authorization server %s does not support PKCE with S256", m.Issuer)
+		}
+		resolved.Authorization = ""
+	}
 	if err := resolved.Validate(); err != nil {
 		return Endpoints{}, err
 	}
